@@ -18,11 +18,9 @@ public class DriveServer {
     private File dirroot;
     private Path currentDir;
     private Path rootDir;
-    private DataInputStream dis;
-    private DataOutputStream dos;
-    private DataOutputStream send;
-    private ObjectOutputStream oos;
     private ObjectInputStream ois;
+    private ObjectOutputStream oos;
+    //private Socket socketcon;
 
     public DriveServer() {
 
@@ -39,16 +37,13 @@ public class DriveServer {
             while (true) {
                 Socket socketcon = ss.accept();
                 System.out.println("Cliente conectado desde " + socketcon.getInetAddress() + ":" + socketcon.getPort());
-                dis = new DataInputStream(socketcon.getInputStream());
-                dos = new DataOutputStream(socketcon.getOutputStream());
                 oos = new ObjectOutputStream(socketcon.getOutputStream());
+                oos.flush();
                 ois = new ObjectInputStream(socketcon.getInputStream());
-                send = new DataOutputStream(socketcon.getOutputStream());
 
                 while(true){
-                    dos.writeUTF(currentDir.toString());
-                    dos.flush();
-                    String action = dis.readUTF();
+                    sendMessage(currentDir.toString());
+                    String action = receiveMessage();
                     if(action.equals("ls")) listFiles();
                     if(action.equals("cd ..")) backDir();
                     if(action.matches("cd \\w+")) changeDir(action);
@@ -61,10 +56,6 @@ public class DriveServer {
                     }
                 }
 
-                dis.close();
-                dos.close();
-                oos.close();
-                ois.close();
                 socketcon.close();
             }
         } catch (IOException e) {
@@ -83,20 +74,16 @@ public class DriveServer {
         if(fileDelete.exists()){
             if(fileDelete.isDirectory()){
                 FileUtils.deleteDirectory(fileDelete);
-                dos.writeUTF("Directorio eliminado correctamente");
-                dos.flush();
+                sendMessage("Directorio eliminado correctamente");
             }else{
                 if (fileDelete.delete()){
-                    dos.writeUTF("Archivo eliminado correctamente");
-                    dos.flush();
+                    sendMessage("Archivo eliminado correctamente");
                 }else{
-                    dos.writeUTF("Error eliminando archivo");
-                    dos.flush();
+                    sendMessage("Error eliminando archivo");
                 }
             }
         }else{
-            dos.writeUTF("Archivo/directorio no encontrado");
-            dos.flush();
+            sendMessage("Archivo/directorio no encontrado");
         }
     }
 
@@ -107,9 +94,8 @@ public class DriveServer {
         File fileDownload = new File(filepath.toString());
         if(fileDownload.exists()){
             if(fileDownload.isDirectory()){
-                dos.writeUTF("dirok");
-                dos.flush();
-                if(dis.readBoolean()){
+                sendMessage("dirok");
+                if(receiveBoolean()){
                     System.out.println("Mandando una carpeta");
                     String zip_name = fileDownload.getAbsolutePath()+".zip";
                     System.out.println(zip_name);
@@ -119,21 +105,19 @@ public class DriveServer {
                     //dis.readUTF();
                 }
             }else{
-                dos.writeUTF("fileok");
-                dos.flush();
-                if (dis.readBoolean()){
+                sendMessage("fileok");
+                if (receiveBoolean()){
                     sendFile(fileDownload, "NO-DIR");
                 }
             }
         }else{
-            dos.writeUTF("404");
-            dos.flush();
+            sendMessage("404");
         }
     }
 
     public void uploadFiles() throws IOException, ClassNotFoundException {
-        if(dis.readBoolean()){
-            Archivo porRecibir = (Archivo) ois.readObject();
+        if(receiveBoolean()){
+            Archivo porRecibir = (Archivo) receiveObject();
             String ruta = Paths.get(currentDir.toString(), porRecibir.getNombre()).toString();
             if(!porRecibir.getExt().equals("DIR")){
                 receiveFile(porRecibir, ruta);
@@ -154,38 +138,48 @@ public class DriveServer {
         porEnviar.setSize(fileDownload.length());
         if(type.equals("DIR-ZIP")) porEnviar.setExt("DIR");
         else porEnviar.setExt(FilenameUtils.getExtension(fileDownload.getName()).toUpperCase(Locale.ROOT));
+
+        sendObject(porEnviar);
+
         DataInputStream fileInput = new DataInputStream(new FileInputStream(fileDownload.getAbsolutePath()));
-        oos.writeObject(porEnviar);
-        oos.flush();
-        long enviado = 0;
-        int parte=0, porcentaje=0;
-        while (enviado<porEnviar.getSize()){
-            byte[] bytes = new byte[1500];
-            parte = fileInput.read(bytes);
-            dos.write(bytes, 0, parte);
-            dos.flush();
-            enviado = enviado + parte;
-            porcentaje = (int)((enviado*100)/porEnviar.getSize());
-            System.out.println("\rEnviado el "+porcentaje+" % del archivo");
+
+
+        long tam = porEnviar.getSize();
+        long enviados = 0;
+        int l;
+
+        while (enviados<tam){
+            byte[] b = new byte[1500];
+            l = fileInput.read(b);
+            oos.write(b, 0, l);
+            oos.flush();
+            enviados += l;
+
         }
-        System.out.println("Deje de enviar");
-        String response = dis.readUTF();
+
+        fileInput.close();
+
+        System.out.println("Archivo enviado");
     }
 
     public void receiveFile(Archivo porRecibir, String ruta) throws IOException, ClassNotFoundException {
         System.out.println("Recibiendo "+ porRecibir.getNombre() + " de tamanio "+ porRecibir.getSize());
         DataOutputStream fileout = new DataOutputStream(new FileOutputStream(ruta));
+
         long recibido = 0;
-        int parte = 0, porcentaje = 0;
-        while (recibido<porRecibir.getSize()){
-            byte[] bytes = new byte[1500];
-            parte = dis.read(bytes);
-            fileout.write(bytes, 0, parte);
+        int l;
+        long tam = porRecibir.getSize();
+
+        while(recibido<tam){
+            byte[] b = new byte[1500];
+            l = ois.read(b, 0, b.length);
+            fileout.write(b, 0, l);
             fileout.flush();
-            recibido = recibido+parte;
-            porcentaje = (int)((recibido*100)/porRecibir.getSize());
-            System.out.println("Recibido el "+ porcentaje +" % del archivo");
+            recibido += l;
         }
+
+        fileout.close();
+        System.out.println("Deje de recibir");
     }
 
     public void backDir(){
@@ -207,12 +201,10 @@ public class DriveServer {
             newDir.mkdirs();
             newDir.setWritable(true);
             System.out.println("Directorio "+ dir + " creado");
-            dos.writeUTF("Directorio "+ dir + " creado");
-            dos.flush();
+            sendMessage("Directorio "+ dir + " creado");
         }else{
             System.out.println("El directorio "+ dir + " ya existe");
-            dos.writeUTF("El directorio "+ dir + " ya existe");
-            dos.flush();
+            sendMessage("El directorio "+ dir + " ya existe");
         }
     }
 
@@ -222,12 +214,10 @@ public class DriveServer {
         Path new_path = Paths.get(currentDir.toString(), dir);
         File newDir = new File(new_path.toString());
         if (newDir.exists()) {
-            dos.writeUTF("ok");
-            dos.flush();
+            sendMessage("ok");
             currentDir = Paths.get(new_path.toString());
         } else {
-            dos.writeUTF("El directorio " + dir + " no existe");
-            dos.flush();
+            sendMessage("El directorio " + dir + " no existe");
         }
     }
 
@@ -241,8 +231,59 @@ public class DriveServer {
             if(f.isDirectory()) name = name + "DIR";
             files.add(name);
         }
-        oos.writeObject(files);
-        oos.flush();
+        sendObject(files);
+    }
+
+    public void sendMessage(String mes){
+        try {
+            oos.writeUTF(mes);
+            oos.flush();
+        } catch (IOException e) {
+            e.printStackTrace();
+        }
+    }
+
+    public String receiveMessage(){
+        try {
+            String res = ois.readUTF();
+            return res;
+        } catch (IOException e) {
+            e.printStackTrace();
+            return null;
+        }
+    }
+
+    public void sendObject(Object toSend){
+        try {
+            oos.writeObject(toSend);
+            oos.flush();
+        } catch (IOException e) {
+            e.printStackTrace();
+        }
+    }
+
+    public Object receiveObject(){
+        try {
+            Object rec = ois.readObject();
+            return rec;
+        } catch (IOException e) {
+            e.printStackTrace();
+            return null;
+        } catch (ClassNotFoundException e) {
+            e.printStackTrace();
+            return null;
+        }
+    }
+
+    public boolean receiveBoolean(){
+        try {
+            boolean res = ois.readBoolean();
+            return res;
+        } catch (IOException e) {
+
+            e.printStackTrace();
+            return false;
+        }
     }
 
     public void createRootDir(){
